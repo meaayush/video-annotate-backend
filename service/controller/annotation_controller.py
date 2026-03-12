@@ -59,13 +59,20 @@ class AnnotationList(Resource):
         if ann_type == 'timestamp' and data.get('timestamp') is None:
             return {'error': 'timestamp is required for timestamp annotations'}, 400
 
-        annotation = Annotation.objects.create(
-            video=video,
-            type=ann_type,
-            source=Annotation.Source.MANUAL,
-            frame_number=data.get('frame_number'),
-            timestamp=data.get('timestamp'),
-            content=content,
+        # Upsert: overwrite existing manual annotation at the same timestamp/frame
+        lookup = {'video': video, 'source': Annotation.Source.MANUAL, 'type': ann_type}
+        if ann_type == 'timestamp':
+            lookup['timestamp'] = data.get('timestamp')
+        else:
+            lookup['frame_number'] = data.get('frame_number')
+
+        annotation, created = Annotation.objects.update_or_create(
+            **lookup,
+            defaults={
+                'frame_number': data.get('frame_number'),
+                'timestamp': data.get('timestamp'),
+                'content': content,
+            },
         )
 
         return {
@@ -76,11 +83,10 @@ class AnnotationList(Resource):
             'timestamp': annotation.timestamp,
             'content': annotation.content,
             'created_at': annotation.created_at.isoformat() if annotation.created_at else None,
-        }, 201
+        }, 200 if not created else 201
 
 
 class AnnotationDetail(Resource):
-    """PATCH/DELETE works for both manual and auto annotations."""
     def patch(self, video_id, annotation_id):
         try:
             annotation = Annotation.objects.get(id=annotation_id, video_id=video_id)
