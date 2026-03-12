@@ -35,4 +35,4 @@ api.add_resource(AutoAnnotationList, '/<string:video_id>/auto-annotations')
 api.add_resource(AutoAnnotationInterval, '/<string:video_id>/auto-annotation-interval')
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", debug=True, port=5000)
