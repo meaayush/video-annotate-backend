@@ -14,6 +14,7 @@ from service.controller.annotation_controller import (
     AnnotationList,
     AutoAnnotationInterval,
     AutoAnnotationList,
+    VideoSummary,
 )
 
 app = Flask(__name__)
@@ -33,6 +34,7 @@ api.add_resource(AnnotationList, '/<string:video_id>/annotations')
 api.add_resource(AnnotationDetail, '/<string:video_id>/annotations/<string:annotation_id>')
 api.add_resource(AutoAnnotationList, '/<string:video_id>/auto-annotations')
 api.add_resource(AutoAnnotationInterval, '/<string:video_id>/auto-annotation-interval')
+api.add_resource(VideoSummary, '/<string:video_id>/summary')
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", debug=True, port=5000)
+    app.run(host="0.0.0.0", debug=True, port=5001)

@@ -2,6 +2,7 @@ from flask import request
 from flask_restful import Resource
 
 from core.models import Annotation, Video
+from util.summary import summarize_annotations, postprocess_highlights_time
 
 DEFAULT_PAGE_SIZE = 50
 
@@ -59,7 +60,6 @@ class AnnotationList(Resource):
         if ann_type == 'timestamp' and data.get('timestamp') is None:
             return {'error': 'timestamp is required for timestamp annotations'}, 400
 
-        # Upsert: overwrite existing manual annotation at the same timestamp/frame
         lookup = {'video': video, 'source': Annotation.Source.MANUAL, 'type': ann_type}
         if ann_type == 'timestamp':
             lookup['timestamp'] = data.get('timestamp')
@@ -124,7 +124,32 @@ class AnnotationDetail(Resource):
         return {'message': 'Annotation deleted'}, 200
 
 
-# ---- Auto annotations (paginated, separate API) ----
+class VideoSummary(Resource):
+    def get(self, video_id):
+        if not Video.objects.filter(id=video_id).exists():
+            return {'error': 'Video not found'}, 404
+
+        annotations = (
+            Annotation.objects
+            .filter(video_id=video_id, timestamp__isnull=False)
+            .exclude(content='')
+            .order_by('timestamp')
+            .values('timestamp', 'content')
+        )
+
+        items = [
+            {'timestamp': float(a['timestamp']), 'content': a['content']}
+            for a in annotations
+        ]
+
+        if not items:
+            return {'error': 'No annotations with timestamps found for this video'}, 422
+
+        summary = summarize_annotations(items)
+        summary = postprocess_highlights_time(summary)
+        
+        return summary, 200
+
 
 class AutoAnnotationList(Resource):
     def get(self, video_id):
