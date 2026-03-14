@@ -7,7 +7,7 @@ from util.summary import summarize_annotations, postprocess_highlights_time
 DEFAULT_PAGE_SIZE = 50
 
 ANNOTATION_FIELDS = (
-    'id', 'type', 'source', 'frame_number', 'timestamp', 'content', 'created_at',
+    'id', 'type', 'source', 'timestamp', 'timestamp_start', 'timestamp_end', 'content', 'created_at',
 )
 
 
@@ -16,14 +16,12 @@ def serialize_annotation(a):
         'id': str(a['id']),
         'type': a['type'],
         'source': a['source'],
-        'frame_number': a['frame_number'],
         'timestamp': a['timestamp'],
+        'timestamp_start': a['timestamp_start'],
+        'timestamp_end': a['timestamp_end'],
         'content': a['content'],
         'created_at': a['created_at'].isoformat() if a['created_at'] else None,
     }
-
-
-# ---- Manual annotations (no pagination) ----
 
 class AnnotationList(Resource):
     def get(self, video_id):
@@ -31,17 +29,21 @@ class AnnotationList(Resource):
         if not Video.objects.filter(id=video_id).exists():
             return {'error': 'Video not found'}, 404
 
-        annotations = Annotation.objects.filter(
+        qs = Annotation.objects.filter(
             video_id=video_id,
             source=Annotation.Source.MANUAL,
-        ).values(*ANNOTATION_FIELDS)
+        )
+
+        search = request.args.get('search', '').strip()
+        if search:
+            qs = qs.filter(content__icontains=search)
 
         return {
-            'annotations': [serialize_annotation(a) for a in annotations],
+            'annotations': [serialize_annotation(a) for a in qs.values(*ANNOTATION_FIELDS)],
+            'search': search or None,
         }, 200
 
     def post(self, video_id):
-        """Create a manual annotation."""
         try:
             video = Video.objects.get(id=video_id)
         except Video.DoesNotExist:
@@ -54,8 +56,11 @@ class AnnotationList(Resource):
         if ann_type not in ('frame', 'timestamp'):
             return {'error': "type must be 'frame' or 'timestamp'"}, 400
 
-        if ann_type == 'frame' and data.get('frame_number') is None:
-            return {'error': 'frame_number is required for frame annotations'}, 400
+        if ann_type == 'frame' and (data.get('timestamp_start') is None or data.get('timestamp_end') is None):
+            return {'error': 'timestamp_start and timestamp_end are required for frame annotations'}, 400
+
+        if ann_type == 'frame' and data['timestamp_start'] >= data['timestamp_end']:
+            return {'error': 'timestamp_start must be less than timestamp_end'}, 400
 
         if ann_type == 'timestamp' and data.get('timestamp') is None:
             return {'error': 'timestamp is required for timestamp annotations'}, 400
@@ -64,13 +69,15 @@ class AnnotationList(Resource):
         if ann_type == 'timestamp':
             lookup['timestamp'] = data.get('timestamp')
         else:
-            lookup['frame_number'] = data.get('frame_number')
+            lookup['timestamp_start'] = data.get('timestamp_start')
+            lookup['timestamp_end'] = data.get('timestamp_end')
 
         annotation, created = Annotation.objects.update_or_create(
             **lookup,
             defaults={
-                'frame_number': data.get('frame_number'),
                 'timestamp': data.get('timestamp'),
+                'timestamp_start': data.get('timestamp_start'),
+                'timestamp_end': data.get('timestamp_end'),
                 'content': content,
             },
         )
@@ -79,8 +86,9 @@ class AnnotationList(Resource):
             'id': str(annotation.id),
             'type': annotation.type,
             'source': annotation.source,
-            'frame_number': annotation.frame_number,
             'timestamp': annotation.timestamp,
+            'timestamp_start': annotation.timestamp_start,
+            'timestamp_end': annotation.timestamp_end,
             'content': annotation.content,
             'created_at': annotation.created_at.isoformat() if annotation.created_at else None,
         }, 200 if not created else 201
@@ -97,10 +105,12 @@ class AnnotationDetail(Resource):
 
         if 'content' in data:
             annotation.content = data['content']
-        if 'frame_number' in data:
-            annotation.frame_number = data['frame_number']
         if 'timestamp' in data:
             annotation.timestamp = data['timestamp']
+        if 'timestamp_start' in data:
+            annotation.timestamp_start = data['timestamp_start']
+        if 'timestamp_end' in data:
+            annotation.timestamp_end = data['timestamp_end']
 
         annotation.save()
 
@@ -108,8 +118,9 @@ class AnnotationDetail(Resource):
             'id': str(annotation.id),
             'type': annotation.type,
             'source': annotation.source,
-            'frame_number': annotation.frame_number,
             'timestamp': annotation.timestamp,
+            'timestamp_start': annotation.timestamp_start,
+            'timestamp_end': annotation.timestamp_end,
             'content': annotation.content,
             'created_at': annotation.created_at.isoformat() if annotation.created_at else None,
         }, 200
@@ -129,18 +140,27 @@ class VideoSummary(Resource):
         if not Video.objects.filter(id=video_id).exists():
             return {'error': 'Video not found'}, 404
 
-        annotations = (
+        ts_annotations = (
             Annotation.objects
-            .filter(video_id=video_id, timestamp__isnull=False)
+            .filter(video_id=video_id, type=Annotation.AnnotationType.TIMESTAMP, timestamp__isnull=False)
             .exclude(content='')
-            .order_by('timestamp')
             .values('timestamp', 'content')
+        )
+        frame_annotations = (
+            Annotation.objects
+            .filter(video_id=video_id, type=Annotation.AnnotationType.FRAME, timestamp_start__isnull=False)
+            .exclude(content='')
+            .values('timestamp_start', 'content')
         )
 
         items = [
             {'timestamp': float(a['timestamp']), 'content': a['content']}
-            for a in annotations
+            for a in ts_annotations
+        ] + [
+            {'timestamp': float(a['timestamp_start']), 'content': a['content']}
+            for a in frame_annotations
         ]
+        items.sort(key=lambda x: x['timestamp'])
 
         if not items:
             return {'error': 'No annotations with timestamps found for this video'}, 422
@@ -153,12 +173,6 @@ class VideoSummary(Resource):
 
 class AutoAnnotationList(Resource):
     def get(self, video_id):
-        """
-        Returns ALL auto-annotation slots for the video, paginated.
-        Slots are generated from duration + interval.
-        Slots that have saved content include id, content, note.
-        Empty slots have null id/content/note.
-        """
         try:
             video = Video.objects.only(
                 'id', 'duration', 'auto_annotation_interval',
@@ -177,7 +191,6 @@ class AutoAnnotationList(Resource):
                 'duration': duration,
             }, 200
 
-        # Generate all timestamps: 0, interval, 2*interval, ...
         all_timestamps = []
         ts = 0.0
         while ts <= duration:
@@ -185,13 +198,38 @@ class AutoAnnotationList(Resource):
             ts += interval
         total = len(all_timestamps)
 
-        # Paginate
+        search = request.args.get('search', '').strip()
+
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', DEFAULT_PAGE_SIZE, type=int)
+
+        # When searching, skip slot generation — paginate over saved annotations matching content
+        if search:
+            saved_qs = Annotation.objects.filter(
+                video_id=video_id,
+                source=Annotation.Source.AUTO,
+                content__icontains=search,
+            ).order_by('timestamp')
+
+            total_search = saved_qs.count()
+            offset = (page - 1) * page_size
+            paged = saved_qs.values(*ANNOTATION_FIELDS)[offset:offset + page_size]
+
+            return {
+                'annotations': [serialize_annotation(a) for a in paged],
+                'search': search,
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total': total_search,
+                    'total_pages': (total_search + page_size - 1) // page_size if page_size else 1,
+                },
+                'auto_annotation_interval': interval,
+                'duration': duration,
+            }, 200
         offset = (page - 1) * page_size
         page_timestamps = all_timestamps[offset:offset + page_size]
 
-        # Fetch saved annotations for this page's timestamp range only
         saved = Annotation.objects.filter(
             video_id=video_id,
             source=Annotation.Source.AUTO,
@@ -200,7 +238,6 @@ class AutoAnnotationList(Resource):
 
         saved_map = {a['timestamp']: a for a in saved}
 
-        # Merge: fill in saved content or return empty slot
         annotations = []
         for ts in page_timestamps:
             if ts in saved_map:
@@ -210,14 +247,16 @@ class AutoAnnotationList(Resource):
                     'id': None,
                     'type': 'timestamp',
                     'source': 'auto',
-                    'frame_number': None,
                     'timestamp': ts,
+                    'timestamp_start': None,
+                    'timestamp_end': None,
                     'content': '',
                     'created_at': None,
                 })
 
         return {
             'annotations': annotations,
+            'search': None,
             'pagination': {
                 'page': page,
                 'page_size': page_size,
@@ -229,7 +268,6 @@ class AutoAnnotationList(Resource):
         }, 200
 
     def post(self, video_id):
-        """Save a note/content on an auto-annotation timestamp (upsert)."""
         try:
             video = Video.objects.get(id=video_id)
         except Video.DoesNotExist:
@@ -260,8 +298,6 @@ class AutoAnnotationList(Resource):
             'created_at': annotation.created_at.isoformat() if annotation.created_at else None,
         }, 201 if created else 200
 
-
-# ---- Auto annotation interval setting ----
 
 class AutoAnnotationInterval(Resource):
     def patch(self, video_id):

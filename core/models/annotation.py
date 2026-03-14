@@ -19,17 +19,19 @@ class Annotation(models.Model):
     )
     type = models.CharField(max_length=20, choices=AnnotationType.choices)
     source = models.CharField(max_length=10, choices=Source.choices, default=Source.MANUAL)
-    frame_number = models.IntegerField(null=True, blank=True, help_text='Set when type=frame')
-    timestamp = models.FloatField(null=True, blank=True, help_text='Seconds into video, set when type=timestamp')
+    timestamp = models.FloatField(null=True, blank=True)
+    timestamp_start = models.FloatField(null=True, blank=True)
+    timestamp_end = models.FloatField(null=True, blank=True)
     content = models.TextField(help_text='Annotation text/data', default='', blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         app_label = 'core'
-        ordering = ['timestamp', 'frame_number', 'created_at']
+        ordering = ['timestamp', 'timestamp_start', 'created_at']
         indexes = [
             models.Index(fields=['video', 'source'], name='idx_annotation_video_source'),
             models.Index(fields=['video', 'source', 'timestamp'], name='idx_annotation_video_src_ts'),
+            models.Index(fields=['video', 'source', 'timestamp_start'], name='idx_ann_video_src_ts_start'),
         ]
 
     def __str__(self):
